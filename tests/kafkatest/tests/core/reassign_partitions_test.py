@@ -84,7 +84,7 @@ class ReassignPartitionsTest(ProduceConsumeValidateTest):
         self.logger.debug("Jumble partition assignment with seed " + str(seed))
         random.seed(seed)
         # The list may still be in order, but that's ok
-        shuffled_list = range(0, self.num_partitions)
+        shuffled_list = list(range(0, self.num_partitions))
         random.shuffle(shuffled_list)
 
         for i in range(0, self.num_partitions):
@@ -124,7 +124,7 @@ class ReassignPartitionsTest(ProduceConsumeValidateTest):
         # Since the configured check interval is 5 seconds, we wait another
         # 6 seconds to ensure that at least one more cleaning so that the last
         # segment is deleted. An altenate to using timeouts is to poll each
-        # partition untill the log start offset matches the end offset. The
+        # partition until the log start offset matches the end offset. The
         # latter is more robust.
         time.sleep(6)
 

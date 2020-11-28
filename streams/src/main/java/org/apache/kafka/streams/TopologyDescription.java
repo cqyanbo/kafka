@@ -16,9 +16,12 @@
  */
 package org.apache.kafka.streams;
 
+import org.apache.kafka.streams.processor.TopicNameExtractor;
+import org.apache.kafka.streams.processor.api.ProcessorSupplier;
 import org.apache.kafka.streams.processor.internals.StreamTask;
 
 import java.util.Set;
+import java.util.regex.Pattern;
 
 /**
  * A meta representation of a {@link Topology topology}.
@@ -35,8 +38,8 @@ public interface TopologyDescription {
     /**
      * A connected sub-graph of a {@link Topology}.
      * <p>
-     * Nodes of a {@code Subtopology} are connected {@link Topology#addProcessor(String,
-     * org.apache.kafka.streams.processor.ProcessorSupplier, String...) directly} or indirectly via
+     * Nodes of a {@code Subtopology} are connected
+     * {@link Topology#addProcessor(String, ProcessorSupplier, String...) directly} or indirectly via
      * {@link Topology#connectProcessorAndStateStores(String, String...) state stores}
      * (i.e., if multiple processors share the same state).
      */
@@ -57,7 +60,7 @@ public interface TopologyDescription {
     /**
      * Represents a {@link Topology#addGlobalStore(org.apache.kafka.streams.state.StoreBuilder, String,
      * org.apache.kafka.common.serialization.Deserializer, org.apache.kafka.common.serialization.Deserializer, String,
-     * String, org.apache.kafka.streams.processor.ProcessorSupplier) global store}.
+     * String, org.apache.kafka.streams.processor.api.ProcessorSupplier) global store}.
      * Adding a global store results in adding a source node and one stateful processor node.
      * Note, that all added global stores form a single unit (similar to a {@link Subtopology}) even if different
      * global stores are not connected to each other.
@@ -76,6 +79,8 @@ public interface TopologyDescription {
          * @return the "global" processor node
          */
         Processor processor();
+
+        int id();
     }
 
     /**
@@ -111,8 +116,22 @@ public interface TopologyDescription {
         /**
          * The topic names this source node is reading from.
          * @return comma separated list of topic names or pattern (as String)
+         * @deprecated use {@link #topicSet()} or {@link #topicPattern()} instead
          */
+        @Deprecated
         String topics();
+
+        /**
+         * The topic names this source node is reading from.
+         * @return a set of topic names
+         */
+        Set<String> topicSet();
+
+        /**
+         * The pattern used to match topic names that is reading from.
+         * @return the pattern used to match topic names
+         */
+        Pattern topicPattern();
     }
 
     /**
@@ -132,9 +151,17 @@ public interface TopologyDescription {
     interface Sink extends Node {
         /**
          * The topic name this sink node is writing to.
+         * Could be {@code null} if the topic name can only be dynamically determined based on {@link TopicNameExtractor}
          * @return a topic name
          */
         String topic();
+
+        /**
+         * The {@link TopicNameExtractor} class that this sink node uses to dynamically extract the topic name to write to.
+         * Could be {@code null} if the topic name is not dynamically determined.
+         * @return the {@link TopicNameExtractor} class used get the topic name
+         */
+        TopicNameExtractor topicNameExtractor();
     }
 
     /**

@@ -17,106 +17,106 @@
 package org.apache.kafka.common.requests;
 
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.message.OffsetForLeaderEpochResponseData;
+import org.apache.kafka.common.message.OffsetForLeaderEpochResponseData.OffsetForLeaderPartitionResult;
+import org.apache.kafka.common.message.OffsetForLeaderEpochResponseData.OffsetForLeaderTopicResult;
 import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.protocol.Errors;
-import org.apache.kafka.common.protocol.types.ArrayOf;
-import org.apache.kafka.common.protocol.types.Field;
-import org.apache.kafka.common.protocol.types.Schema;
 import org.apache.kafka.common.protocol.types.Struct;
-import org.apache.kafka.common.utils.CollectionUtils;
 
 import java.nio.ByteBuffer;
-import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 
-import static org.apache.kafka.common.protocol.CommonFields.ERROR_CODE;
-import static org.apache.kafka.common.protocol.CommonFields.PARTITION_ID;
-import static org.apache.kafka.common.protocol.CommonFields.TOPIC_NAME;
-import static org.apache.kafka.common.protocol.types.Type.INT64;
-
+/**
+ * Possible error codes:
+ * - {@link Errors#TOPIC_AUTHORIZATION_FAILED} If the user does not have DESCRIBE access to a requested topic
+ * - {@link Errors#REPLICA_NOT_AVAILABLE} If the request is received by a broker with version < 2.6 which is not a replica
+ * - {@link Errors#NOT_LEADER_OR_FOLLOWER} If the broker is not a leader or follower and either the provided leader epoch
+ *     matches the known leader epoch on the broker or is empty
+ * - {@link Errors#FENCED_LEADER_EPOCH} If the epoch is lower than the broker's epoch
+ * - {@link Errors#UNKNOWN_LEADER_EPOCH} If the epoch is larger than the broker's epoch
+ * - {@link Errors#UNKNOWN_TOPIC_OR_PARTITION} If the broker does not have metadata for a topic or partition
+ * - {@link Errors#KAFKA_STORAGE_ERROR} If the log directory for one of the requested partitions is offline
+ * - {@link Errors#UNKNOWN_SERVER_ERROR} For any unexpected errors
+ */
 public class OffsetsForLeaderEpochResponse extends AbstractResponse {
-    private static final String TOPICS_KEY_NAME = "topics";
-    private static final String PARTITIONS_KEY_NAME = "partitions";
-    private static final String END_OFFSET_KEY_NAME = "end_offset";
 
-    private static final Schema OFFSET_FOR_LEADER_EPOCH_RESPONSE_PARTITION_V0 = new Schema(
-            ERROR_CODE,
-            PARTITION_ID,
-            new Field(END_OFFSET_KEY_NAME, INT64, "The end offset"));
-    private static final Schema OFFSET_FOR_LEADER_EPOCH_RESPONSE_TOPIC_V0 = new Schema(
-            TOPIC_NAME,
-            new Field(PARTITIONS_KEY_NAME, new ArrayOf(OFFSET_FOR_LEADER_EPOCH_RESPONSE_PARTITION_V0)));
-    private static final Schema OFFSET_FOR_LEADER_EPOCH_RESPONSE_V0 = new Schema(
-            new Field(TOPICS_KEY_NAME, new ArrayOf(OFFSET_FOR_LEADER_EPOCH_RESPONSE_TOPIC_V0),
-                    "An array of topics for which we have leader offsets for some requested Partition Leader Epoch"));
+    private final OffsetForLeaderEpochResponseData data;
 
-    public static Schema[] schemaVersions() {
-        return new Schema[]{OFFSET_FOR_LEADER_EPOCH_RESPONSE_V0};
+    public OffsetsForLeaderEpochResponse(OffsetForLeaderEpochResponseData data) {
+        this.data = data;
     }
 
-    private Map<TopicPartition, EpochEndOffset> epochEndOffsetsByPartition;
+    public OffsetsForLeaderEpochResponse(Struct struct, short version) {
+        data = new OffsetForLeaderEpochResponseData(struct, version);
+    }
 
-    public OffsetsForLeaderEpochResponse(Struct struct) {
-        epochEndOffsetsByPartition = new HashMap<>();
-        for (Object topicAndEpocsObj : struct.getArray(TOPICS_KEY_NAME)) {
-            Struct topicAndEpochs = (Struct) topicAndEpocsObj;
-            String topic = topicAndEpochs.get(TOPIC_NAME);
-            for (Object partitionAndEpochObj : topicAndEpochs.getArray(PARTITIONS_KEY_NAME)) {
-                Struct partitionAndEpoch = (Struct) partitionAndEpochObj;
-                Errors error = Errors.forCode(partitionAndEpoch.get(ERROR_CODE));
-                int partitionId = partitionAndEpoch.get(PARTITION_ID);
-                TopicPartition tp = new TopicPartition(topic, partitionId);
-                long endOffset = partitionAndEpoch.getLong(END_OFFSET_KEY_NAME);
-                epochEndOffsetsByPartition.put(tp, new EpochEndOffset(error, endOffset));
+    public OffsetsForLeaderEpochResponse(Map<TopicPartition, EpochEndOffset> offsets) {
+        this(0, offsets);
+    }
+
+    public OffsetsForLeaderEpochResponse(int throttleTimeMs, Map<TopicPartition, EpochEndOffset> offsets) {
+        data = new OffsetForLeaderEpochResponseData();
+        data.setThrottleTimeMs(throttleTimeMs);
+
+        offsets.forEach((tp, offset) -> {
+            OffsetForLeaderTopicResult topic = data.topics().find(tp.topic());
+            if (topic == null) {
+                topic = new OffsetForLeaderTopicResult().setTopic(tp.topic());
+                data.topics().add(topic);
             }
-        }
+            topic.partitions().add(new OffsetForLeaderPartitionResult()
+                .setPartition(tp.partition())
+                .setErrorCode(offset.error().code())
+                .setLeaderEpoch(offset.leaderEpoch())
+                .setEndOffset(offset.endOffset()));
+        });
     }
 
-    public OffsetsForLeaderEpochResponse(Map<TopicPartition, EpochEndOffset> epochsByTopic) {
-        this.epochEndOffsetsByPartition = epochsByTopic;
+    public OffsetForLeaderEpochResponseData data() {
+        return data;
     }
 
     public Map<TopicPartition, EpochEndOffset> responses() {
+        Map<TopicPartition, EpochEndOffset> epochEndOffsetsByPartition = new HashMap<>();
+
+        data.topics().forEach(topic ->
+            topic.partitions().forEach(partition ->
+                epochEndOffsetsByPartition.put(
+                    new TopicPartition(topic.topic(), partition.partition()),
+                    new EpochEndOffset(
+                        Errors.forCode(partition.errorCode()),
+                        partition.leaderEpoch(),
+                        partition.endOffset()))));
+
         return epochEndOffsetsByPartition;
     }
 
     @Override
     public Map<Errors, Integer> errorCounts() {
         Map<Errors, Integer> errorCounts = new HashMap<>();
-        for (EpochEndOffset response : epochEndOffsetsByPartition.values())
-            updateErrorCounts(errorCounts, response.error());
+        data.topics().forEach(topic ->
+            topic.partitions().forEach(partition ->
+                updateErrorCounts(errorCounts, Errors.forCode(partition.errorCode()))));
         return errorCounts;
     }
 
-    public static OffsetsForLeaderEpochResponse parse(ByteBuffer buffer, short versionId) {
-        return new OffsetsForLeaderEpochResponse(ApiKeys.OFFSET_FOR_LEADER_EPOCH.responseSchema(versionId).read(buffer));
+    public int throttleTimeMs() {
+        return data.throttleTimeMs();
+    }
+
+    public static OffsetsForLeaderEpochResponse parse(ByteBuffer buffer, short version) {
+        return new OffsetsForLeaderEpochResponse(ApiKeys.OFFSET_FOR_LEADER_EPOCH.responseSchema(version).read(buffer), version);
     }
 
     @Override
     protected Struct toStruct(short version) {
-        Struct responseStruct = new Struct(ApiKeys.OFFSET_FOR_LEADER_EPOCH.responseSchema(version));
+        return data.toStruct(version);
+    }
 
-        Map<String, Map<Integer, EpochEndOffset>> endOffsetsByTopic = CollectionUtils.groupDataByTopic(epochEndOffsetsByPartition);
-
-        List<Struct> topics = new ArrayList<>(endOffsetsByTopic.size());
-        for (Map.Entry<String, Map<Integer, EpochEndOffset>> topicToPartitionEpochs : endOffsetsByTopic.entrySet()) {
-            Struct topicStruct = responseStruct.instance(TOPICS_KEY_NAME);
-            topicStruct.set(TOPIC_NAME, topicToPartitionEpochs.getKey());
-            Map<Integer, EpochEndOffset> partitionEpochs = topicToPartitionEpochs.getValue();
-            List<Struct> partitions = new ArrayList<>();
-            for (Map.Entry<Integer, EpochEndOffset> partitionEndOffset : partitionEpochs.entrySet()) {
-                Struct partitionStruct = topicStruct.instance(PARTITIONS_KEY_NAME);
-                partitionStruct.set(ERROR_CODE, partitionEndOffset.getValue().error().code());
-                partitionStruct.set(PARTITION_ID, partitionEndOffset.getKey());
-                partitionStruct.set(END_OFFSET_KEY_NAME, partitionEndOffset.getValue().endOffset());
-                partitions.add(partitionStruct);
-            }
-            topicStruct.set(PARTITIONS_KEY_NAME, partitions.toArray());
-            topics.add(topicStruct);
-        }
-        responseStruct.set(TOPICS_KEY_NAME, topics.toArray());
-        return responseStruct;
+    @Override
+    public String toString() {
+        return data.toString();
     }
 }

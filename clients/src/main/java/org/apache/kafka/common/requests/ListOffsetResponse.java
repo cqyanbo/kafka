@@ -16,232 +16,103 @@
  */
 package org.apache.kafka.common.requests;
 
-import org.apache.kafka.common.TopicPartition;
-import org.apache.kafka.common.protocol.ApiKeys;
-import org.apache.kafka.common.protocol.Errors;
-import org.apache.kafka.common.protocol.types.ArrayOf;
-import org.apache.kafka.common.protocol.types.Field;
-import org.apache.kafka.common.protocol.types.Schema;
-import org.apache.kafka.common.protocol.types.Struct;
-import org.apache.kafka.common.utils.CollectionUtils;
-import org.apache.kafka.common.utils.Utils;
-
 import java.nio.ByteBuffer;
-import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-import static org.apache.kafka.common.protocol.CommonFields.ERROR_CODE;
-import static org.apache.kafka.common.protocol.CommonFields.PARTITION_ID;
-import static org.apache.kafka.common.protocol.CommonFields.THROTTLE_TIME_MS;
-import static org.apache.kafka.common.protocol.CommonFields.TOPIC_NAME;
-import static org.apache.kafka.common.protocol.types.Type.INT64;
+import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.message.ListOffsetResponseData;
+import org.apache.kafka.common.message.ListOffsetResponseData.ListOffsetPartitionResponse;
+import org.apache.kafka.common.message.ListOffsetResponseData.ListOffsetTopicResponse;
+import org.apache.kafka.common.protocol.ApiKeys;
+import org.apache.kafka.common.protocol.Errors;
+import org.apache.kafka.common.protocol.types.Struct;
+import org.apache.kafka.common.record.RecordBatch;
 
+/**
+ * Possible error codes:
+ *
+ * - {@link Errors#UNSUPPORTED_FOR_MESSAGE_FORMAT} If the message format does not support lookup by timestamp
+ * - {@link Errors#TOPIC_AUTHORIZATION_FAILED} If the user does not have DESCRIBE access to a requested topic
+ * - {@link Errors#REPLICA_NOT_AVAILABLE} If the request is received by a broker with version < 2.6 which is not a replica
+ * - {@link Errors#NOT_LEADER_OR_FOLLOWER} If the broker is not a leader or follower and either the provided leader epoch
+ *     matches the known leader epoch on the broker or is empty
+ * - {@link Errors#FENCED_LEADER_EPOCH} If the epoch is lower than the broker's epoch
+ * - {@link Errors#UNKNOWN_LEADER_EPOCH} If the epoch is larger than the broker's epoch
+ * - {@link Errors#UNKNOWN_TOPIC_OR_PARTITION} If the broker does not have metadata for a topic or partition
+ * - {@link Errors#KAFKA_STORAGE_ERROR} If the log directory for one of the requested partitions is offline
+ * - {@link Errors#UNKNOWN_SERVER_ERROR} For any unexpected errors
+ * - {@link Errors#LEADER_NOT_AVAILABLE} The leader's HW has not caught up after recent election (v4 protocol)
+ * - {@link Errors#OFFSET_NOT_AVAILABLE} The leader's HW has not caught up after recent election (v5+ protocol)
+ */
 public class ListOffsetResponse extends AbstractResponse {
     public static final long UNKNOWN_TIMESTAMP = -1L;
     public static final long UNKNOWN_OFFSET = -1L;
+    public static final int UNKNOWN_EPOCH = RecordBatch.NO_PARTITION_LEADER_EPOCH;
 
-    private static final String RESPONSES_KEY_NAME = "responses";
+    private final ListOffsetResponseData data;
 
-    // topic level field names
-    private static final String PARTITIONS_KEY_NAME = "partition_responses";
-
-    /**
-     * Possible error code:
-     *
-     *  UNKNOWN_TOPIC_OR_PARTITION (3)
-     *  NOT_LEADER_FOR_PARTITION (6)
-     *  UNSUPPORTED_FOR_MESSAGE_FORMAT (43)
-     *  UNKNOWN (-1)
-     */
-
-    // This key is only used by ListOffsetResponse v0
-    @Deprecated
-    private static final String OFFSETS_KEY_NAME = "offsets";
-    private static final String TIMESTAMP_KEY_NAME = "timestamp";
-    private static final String OFFSET_KEY_NAME = "offset";
-
-    private static final Schema LIST_OFFSET_RESPONSE_PARTITION_V0 = new Schema(
-            PARTITION_ID,
-            ERROR_CODE,
-            new Field(OFFSETS_KEY_NAME, new ArrayOf(INT64), "A list of offsets."));
-
-    private static final Schema LIST_OFFSET_RESPONSE_PARTITION_V1 = new Schema(
-            PARTITION_ID,
-            ERROR_CODE,
-            new Field(TIMESTAMP_KEY_NAME, INT64, "The timestamp associated with the returned offset"),
-            new Field(OFFSET_KEY_NAME, INT64, "offset found"));
-
-    private static final Schema LIST_OFFSET_RESPONSE_TOPIC_V0 = new Schema(
-            TOPIC_NAME,
-            new Field(PARTITIONS_KEY_NAME, new ArrayOf(LIST_OFFSET_RESPONSE_PARTITION_V0)));
-
-    private static final Schema LIST_OFFSET_RESPONSE_TOPIC_V1 = new Schema(
-            TOPIC_NAME,
-            new Field(PARTITIONS_KEY_NAME, new ArrayOf(LIST_OFFSET_RESPONSE_PARTITION_V1)));
-
-    private static final Schema LIST_OFFSET_RESPONSE_V0 = new Schema(
-            new Field(RESPONSES_KEY_NAME, new ArrayOf(LIST_OFFSET_RESPONSE_TOPIC_V0)));
-
-    private static final Schema LIST_OFFSET_RESPONSE_V1 = new Schema(
-            new Field(RESPONSES_KEY_NAME, new ArrayOf(LIST_OFFSET_RESPONSE_TOPIC_V1)));
-    private static final Schema LIST_OFFSET_RESPONSE_V2 = new Schema(
-            THROTTLE_TIME_MS,
-            new Field(RESPONSES_KEY_NAME, new ArrayOf(LIST_OFFSET_RESPONSE_TOPIC_V1)));
-
-    public static Schema[] schemaVersions() {
-        return new Schema[] {LIST_OFFSET_RESPONSE_V0, LIST_OFFSET_RESPONSE_V1, LIST_OFFSET_RESPONSE_V2};
+    public ListOffsetResponse(ListOffsetResponseData data) {
+        this.data = data;
     }
 
-    public static final class PartitionData {
-        public final Errors error;
-        // The offsets list is only used in ListOffsetResponse v0.
-        @Deprecated
-        public final List<Long> offsets;
-        public final Long timestamp;
-        public final Long offset;
-
-        /**
-         * Constructor for ListOffsetResponse v0
-         */
-        @Deprecated
-        public PartitionData(Errors error, List<Long> offsets) {
-            this.error = error;
-            this.offsets = offsets;
-            this.timestamp = null;
-            this.offset = null;
-        }
-
-        /**
-         * Constructor for ListOffsetResponse v1
-         */
-        public PartitionData(Errors error, long timestamp, long offset) {
-            this.error = error;
-            this.timestamp = timestamp;
-            this.offset = offset;
-            this.offsets = null;
-        }
-
-        @Override
-        public String toString() {
-            StringBuilder bld = new StringBuilder();
-            bld.append("PartitionData{").
-                append("errorCode: ").append((int) error.code()).
-                append(", timestamp: ").append(timestamp).
-                append(", offset: ").append(offset).
-                append(", offsets: ");
-            if (offsets == null) {
-                bld.append(offsets);
-            } else {
-                bld.append("[").append(Utils.join(this.offsets, ",")).append("]");
-            }
-            bld.append("}");
-            return bld.toString();
-        }
+    public ListOffsetResponse(Struct struct, short version) {
+        data = new ListOffsetResponseData(struct, version);
     }
 
-    private final int throttleTimeMs;
-    private final Map<TopicPartition, PartitionData> responseData;
-
-    /**
-     * Constructor for all versions without throttle time
-     */
-    public ListOffsetResponse(Map<TopicPartition, PartitionData> responseData) {
-        this(DEFAULT_THROTTLE_TIME, responseData);
-    }
-
-    public ListOffsetResponse(int throttleTimeMs, Map<TopicPartition, PartitionData> responseData) {
-        this.throttleTimeMs = throttleTimeMs;
-        this.responseData = responseData;
-    }
-
-    public ListOffsetResponse(Struct struct) {
-        this.throttleTimeMs = struct.getOrElse(THROTTLE_TIME_MS, DEFAULT_THROTTLE_TIME);
-        responseData = new HashMap<>();
-        for (Object topicResponseObj : struct.getArray(RESPONSES_KEY_NAME)) {
-            Struct topicResponse = (Struct) topicResponseObj;
-            String topic = topicResponse.get(TOPIC_NAME);
-            for (Object partitionResponseObj : topicResponse.getArray(PARTITIONS_KEY_NAME)) {
-                Struct partitionResponse = (Struct) partitionResponseObj;
-                int partition = partitionResponse.get(PARTITION_ID);
-                Errors error = Errors.forCode(partitionResponse.get(ERROR_CODE));
-                PartitionData partitionData;
-                if (partitionResponse.hasField(OFFSETS_KEY_NAME)) {
-                    Object[] offsets = partitionResponse.getArray(OFFSETS_KEY_NAME);
-                    List<Long> offsetsList = new ArrayList<>();
-                    for (Object offset : offsets)
-                        offsetsList.add((Long) offset);
-                    partitionData = new PartitionData(error, offsetsList);
-                } else {
-                    long timestamp = partitionResponse.getLong(TIMESTAMP_KEY_NAME);
-                    long offset = partitionResponse.getLong(OFFSET_KEY_NAME);
-                    partitionData = new PartitionData(error, timestamp, offset);
-                }
-                responseData.put(new TopicPartition(topic, partition), partitionData);
-            }
-        }
-    }
-
+    @Override
     public int throttleTimeMs() {
-        return throttleTimeMs;
+        return data.throttleTimeMs();
     }
 
-    public Map<TopicPartition, PartitionData> responseData() {
-        return responseData;
+    public ListOffsetResponseData data() {
+        return data;
+    }
+
+    public List<ListOffsetTopicResponse> topics() {
+        return data.topics();
     }
 
     @Override
     public Map<Errors, Integer> errorCounts() {
         Map<Errors, Integer> errorCounts = new HashMap<>();
-        for (PartitionData response : responseData.values())
-            updateErrorCounts(errorCounts, response.error);
+        topics().forEach(topic ->
+            topic.partitions().forEach(partition ->
+                updateErrorCounts(errorCounts, Errors.forCode(partition.errorCode()))
+            )
+        );
         return errorCounts;
     }
 
     public static ListOffsetResponse parse(ByteBuffer buffer, short version) {
-        return new ListOffsetResponse(ApiKeys.LIST_OFFSETS.parseResponse(version, buffer));
+        return new ListOffsetResponse(ApiKeys.LIST_OFFSETS.parseResponse(version, buffer), version);
     }
 
     @Override
     protected Struct toStruct(short version) {
-        Struct struct = new Struct(ApiKeys.LIST_OFFSETS.responseSchema(version));
-        struct.setIfExists(THROTTLE_TIME_MS, throttleTimeMs);
-        Map<String, Map<Integer, PartitionData>> topicsData = CollectionUtils.groupDataByTopic(responseData);
-
-        List<Struct> topicArray = new ArrayList<>();
-        for (Map.Entry<String, Map<Integer, PartitionData>> topicEntry: topicsData.entrySet()) {
-            Struct topicData = struct.instance(RESPONSES_KEY_NAME);
-            topicData.set(TOPIC_NAME, topicEntry.getKey());
-            List<Struct> partitionArray = new ArrayList<>();
-            for (Map.Entry<Integer, PartitionData> partitionEntry : topicEntry.getValue().entrySet()) {
-                PartitionData offsetPartitionData = partitionEntry.getValue();
-                Struct partitionData = topicData.instance(PARTITIONS_KEY_NAME);
-                partitionData.set(PARTITION_ID, partitionEntry.getKey());
-                partitionData.set(ERROR_CODE, offsetPartitionData.error.code());
-                if (version == 0)
-                    partitionData.set(OFFSETS_KEY_NAME, offsetPartitionData.offsets.toArray());
-                else {
-                    partitionData.set(TIMESTAMP_KEY_NAME, offsetPartitionData.timestamp);
-                    partitionData.set(OFFSET_KEY_NAME, offsetPartitionData.offset);
-                }
-                partitionArray.add(partitionData);
-            }
-            topicData.set(PARTITIONS_KEY_NAME, partitionArray.toArray());
-            topicArray.add(topicData);
-        }
-        struct.set(RESPONSES_KEY_NAME, topicArray.toArray());
-
-        return struct;
+        return data.toStruct(version);
     }
 
     @Override
     public String toString() {
-        StringBuilder bld = new StringBuilder();
-        bld.append("(type=ListOffsetResponse")
-            .append(", throttleTimeMs=").append(throttleTimeMs)
-            .append(", responseData=").append(responseData)
-            .append(")");
-        return bld.toString();
+        return data.toString();
+    }
+
+    @Override
+    public boolean shouldClientThrottle(short version) {
+        return version >= 3;
+    }
+
+    public static ListOffsetTopicResponse singletonListOffsetTopicResponse(TopicPartition tp, Errors error, long timestamp, long offset, int epoch) {
+        return new ListOffsetTopicResponse()
+                 .setName(tp.topic())
+                 .setPartitions(Collections.singletonList(new ListOffsetPartitionResponse()
+                         .setPartitionIndex(tp.partition())
+                         .setErrorCode(error.code())
+                         .setTimestamp(timestamp)
+                         .setOffset(offset)
+                         .setLeaderEpoch(epoch)));
     }
 }

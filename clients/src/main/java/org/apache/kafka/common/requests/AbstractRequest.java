@@ -16,6 +16,10 @@
  */
 package org.apache.kafka.common.requests;
 
+import org.apache.kafka.common.errors.UnsupportedVersionException;
+import org.apache.kafka.common.message.FetchRequestData;
+import org.apache.kafka.common.message.AlterIsrRequestData;
+import org.apache.kafka.common.message.ProduceRequestData;
 import org.apache.kafka.common.network.NetworkSend;
 import org.apache.kafka.common.network.Send;
 import org.apache.kafka.common.protocol.ApiKeys;
@@ -25,7 +29,7 @@ import org.apache.kafka.common.protocol.types.Struct;
 import java.nio.ByteBuffer;
 import java.util.Map;
 
-public abstract class AbstractRequest extends AbstractRequestResponse {
+public abstract class AbstractRequest implements AbstractRequestResponse {
 
     public static abstract class Builder<T extends AbstractRequest> {
         private final ApiKeys apiKey;
@@ -75,9 +79,13 @@ public abstract class AbstractRequest extends AbstractRequestResponse {
     }
 
     private final short version;
+    public final ApiKeys api;
 
-    public AbstractRequest(short version) {
+    public AbstractRequest(ApiKeys api, short version) {
+        if (!api.isVersionSupported(version))
+            throw new UnsupportedVersionException("The " + api + " protocol does not support version " + version);
         this.version = version;
+        this.api = api;
     }
 
     /**
@@ -95,7 +103,7 @@ public abstract class AbstractRequest extends AbstractRequestResponse {
      * Use with care, typically {@link #toSend(String, RequestHeader)} should be used instead.
      */
     public ByteBuffer serialize(RequestHeader header) {
-        return serialize(header.toStruct(), toStruct());
+        return RequestUtils.serialize(header.toStruct(), toStruct());
     }
 
     protected abstract Struct toStruct();
@@ -139,9 +147,9 @@ public abstract class AbstractRequest extends AbstractRequestResponse {
     public static AbstractRequest parseRequest(ApiKeys apiKey, short apiVersion, Struct struct) {
         switch (apiKey) {
             case PRODUCE:
-                return new ProduceRequest(struct, apiVersion);
+                return new ProduceRequest(new ProduceRequestData(struct, apiVersion), apiVersion);
             case FETCH:
-                return new FetchRequest(struct, apiVersion);
+                return new FetchRequest(new FetchRequestData(struct, apiVersion), apiVersion);
             case LIST_OFFSETS:
                 return new ListOffsetRequest(struct, apiVersion);
             case METADATA:
@@ -214,6 +222,48 @@ public abstract class AbstractRequest extends AbstractRequestResponse {
                 return new SaslAuthenticateRequest(struct, apiVersion);
             case CREATE_PARTITIONS:
                 return new CreatePartitionsRequest(struct, apiVersion);
+            case CREATE_DELEGATION_TOKEN:
+                return new CreateDelegationTokenRequest(struct, apiVersion);
+            case RENEW_DELEGATION_TOKEN:
+                return new RenewDelegationTokenRequest(struct, apiVersion);
+            case EXPIRE_DELEGATION_TOKEN:
+                return new ExpireDelegationTokenRequest(struct, apiVersion);
+            case DESCRIBE_DELEGATION_TOKEN:
+                return new DescribeDelegationTokenRequest(struct, apiVersion);
+            case DELETE_GROUPS:
+                return new DeleteGroupsRequest(struct, apiVersion);
+            case ELECT_LEADERS:
+                return new ElectLeadersRequest(struct, apiVersion);
+            case INCREMENTAL_ALTER_CONFIGS:
+                return new IncrementalAlterConfigsRequest(struct, apiVersion);
+            case ALTER_PARTITION_REASSIGNMENTS:
+                return new AlterPartitionReassignmentsRequest(struct, apiVersion);
+            case LIST_PARTITION_REASSIGNMENTS:
+                return new ListPartitionReassignmentsRequest(struct, apiVersion);
+            case OFFSET_DELETE:
+                return new OffsetDeleteRequest(struct, apiVersion);
+            case DESCRIBE_CLIENT_QUOTAS:
+                return new DescribeClientQuotasRequest(struct, apiVersion);
+            case ALTER_CLIENT_QUOTAS:
+                return new AlterClientQuotasRequest(struct, apiVersion);
+            case DESCRIBE_USER_SCRAM_CREDENTIALS:
+                return new DescribeUserScramCredentialsRequest(struct, apiVersion);
+            case ALTER_USER_SCRAM_CREDENTIALS:
+                return new AlterUserScramCredentialsRequest(struct, apiVersion);
+            case VOTE:
+                return new VoteRequest(struct, apiVersion);
+            case BEGIN_QUORUM_EPOCH:
+                return new BeginQuorumEpochRequest(struct, apiVersion);
+            case END_QUORUM_EPOCH:
+                return new EndQuorumEpochRequest(struct, apiVersion);
+            case DESCRIBE_QUORUM:
+                return new DescribeQuorumRequest(struct, apiVersion);
+            case ALTER_ISR:
+                return new AlterIsrRequest(new AlterIsrRequestData(struct, apiVersion), apiVersion);
+            case UPDATE_FEATURES:
+                return new UpdateFeaturesRequest(struct, apiVersion);
+            case ENVELOPE:
+                return new EnvelopeRequest(struct, apiVersion);
             default:
                 throw new AssertionError(String.format("ApiKey %s is not currently handled in `parseRequest`, the " +
                         "code should be updated to do so.", apiKey));

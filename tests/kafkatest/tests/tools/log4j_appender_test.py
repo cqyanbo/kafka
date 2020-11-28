@@ -23,7 +23,6 @@ from kafkatest.services.zookeeper import ZookeeperService
 from kafkatest.services.kafka import KafkaService
 from kafkatest.services.console_consumer import ConsoleConsumer
 from kafkatest.services.kafka_log4j_appender import KafkaLog4jAppender
-from kafkatest.services.security.security_config import SecurityConfig
 
 TOPIC = "topic-log4j-appender"
 MAX_MESSAGES = 100
@@ -64,10 +63,9 @@ class Log4jAppenderTest(Test):
             self.logger.debug("Received message: %s" % msg)
             self.messages_received_count += 1
 
-    def start_consumer(self, security_protocol):
-        enable_new_consumer = security_protocol != SecurityConfig.PLAINTEXT
+    def start_consumer(self):
         self.consumer = ConsoleConsumer(self.test_context, num_nodes=self.num_brokers, kafka=self.kafka, topic=TOPIC,
-                                        consumer_timeout_ms=1000, new_consumer=enable_new_consumer,
+                                        consumer_timeout_ms=10000,
                                         message_validator=self.custom_message_validator)
         self.consumer.start()
 
@@ -84,11 +82,11 @@ class Log4jAppenderTest(Test):
         self.start_appender(security_protocol)
         self.appender.wait()
 
-        self.start_consumer(security_protocol)
+        self.start_consumer()
         node = self.consumer.nodes[0]
 
         wait_until(lambda: self.consumer.alive(node),
-            timeout_sec=10, backoff_sec=.2, err_msg="Consumer was too slow to start")
+            timeout_sec=20, backoff_sec=.2, err_msg="Consumer was too slow to start")
 
         # Verify consumed messages count
         wait_until(lambda: self.messages_received_count == MAX_MESSAGES, timeout_sec=10,

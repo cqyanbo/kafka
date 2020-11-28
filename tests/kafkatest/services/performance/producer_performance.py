@@ -78,7 +78,7 @@ class ProducerPerformanceService(HttpMetricsCollector, PerformanceService):
             'bootstrap_servers': self.kafka.bootstrap_servers(self.security_config.security_protocol),
             'client_id': self.client_id,
             'kafka_run_class': self.path.script("kafka-run-class.sh", node),
-            'metrics_props': ' '.join(["%s=%s" % (k, v) for k, v in self.http_metrics_client_configs.iteritems()])
+            'metrics_props': ' '.join("%s=%s" % (k, v) for k, v in self.http_metrics_client_configs.items())
             })
 
         cmd = ""
@@ -87,7 +87,6 @@ class ProducerPerformanceService(HttpMetricsCollector, PerformanceService):
             # In order to ensure more consistent configuration between versions, always use the ProducerPerformance
             # tool from the development branch
             tools_jar = self.path.jar(TOOLS_JAR_NAME, DEV_BRANCH)
-            tools_dependant_libs_jar = self.path.jar(TOOLS_DEPENDANT_TEST_LIBS_JAR_NAME, DEV_BRANCH)
             tools_dependant_libs_jar = self.path.jar(TOOLS_DEPENDANT_TEST_LIBS_JAR_NAME, DEV_BRANCH)
 
             for jar in (tools_jar, tools_dependant_libs_jar):
